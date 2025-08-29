@@ -1,7 +1,6 @@
 using CarInsurance.Api.Data;
 using CarInsurance.Api.Dtos;
 using CarInsurance.Api.Models;
-using Humanizer;
 using Microsoft.EntityFrameworkCore;
 
 namespace CarInsurance.Api.Services;
@@ -59,6 +58,44 @@ public class CarService(AppDbContext db)
             claim.Description,
             claim.Amount,
             claim.Status
+        );
+    }
+
+    public async Task<CarHistoryResponse> GetCarHistoryAsync(long cardId)
+    {
+        var car = await _db.Cars
+            .Include(c => c.Policies)
+            .Include(c => c.Claims)
+            .FirstOrDefaultAsync(c => c.Id == cardId);
+
+        if (car == null) throw new KeyNotFoundException($"Car {cardId} not found");
+
+        var policies = car.Policies
+            .OrderBy(p => p.StartDate)
+            .Select(p => new InsurancePolicyDto(
+                p.StartDate,
+                p.EndDate,
+                p.Provider
+            )).ToList();
+
+        var claims = car.Claims
+            .OrderBy(c => c.ClaimDate)
+            .Select(c => new InsuranceClaimResponse(
+                c.Id,
+                c.CarId,
+                c.ClaimDate,
+                c.Description,
+                c.Amount,
+                c.Status
+            )).ToList();
+
+        return new CarHistoryResponse(
+            car.Id,
+            car.Vin,
+            car.Make,
+            car.Model,
+            policies,
+            claims
         );
     }
 }
