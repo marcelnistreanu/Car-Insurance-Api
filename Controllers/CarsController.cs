@@ -1,5 +1,6 @@
 using CarInsurance.Api.Dtos;
 using CarInsurance.Api.Services;
+using CarInsurance.Api.Utils;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CarInsurance.Api.Controllers;
@@ -11,59 +12,67 @@ public class CarsController(CarService service) : ControllerBase
     private readonly CarService _service = service;
 
     [HttpGet("cars")]
-    public async Task<ActionResult<List<CarDto>>> GetCars()
-        => Ok(await _service.ListCarsAsync());
+    public async Task<IActionResult> GetCars()
+    {
+        var result = await _service.ListCarsAsync();
+
+        if (!result.IsSuccess)
+            return BadRequest(new { message = result.Error?.Message ?? "An unknown error occurred." });
+
+        return Ok(result.Value);
+    }
 
     [HttpGet("cars/{carId:long}/insurance-valid")]
-    public async Task<ActionResult<InsuranceValidityResponse>> IsInsuranceValid(long carId, [FromQuery] string date)
+    public async Task<IActionResult> IsInsuranceValid(long carId, [FromQuery] string date)
     {
-        if (!DateOnly.TryParse(date, out var parsed))
-            return BadRequest("Invalid date format. Use YYYY-MM-DD.");
+        var result = await _service.IsInsuranceValidAsync(carId, date);
+        if (!result.IsSuccess)
+        {
+            if (result.Error?.Code == "record.not.found")
+                return NotFound(new { message = result.Error.Message });
+            if (result.Error?.Code == "invalid.date.format")
+                return BadRequest(new { message = result.Error.Message });
+            return BadRequest(new { message = result.Error?.Message ?? "An unknown error occurred." });
+        }
 
-        try
-        {
-            var valid = await _service.IsInsuranceValidAsync(carId, parsed);
-            return Ok(new InsuranceValidityResponse(carId, parsed.ToString("yyyy-MM-dd"), valid));
-        }
-        catch (KeyNotFoundException)
-        {
-            return NotFound();
-        }
+        return Ok(result.Value);
     }
 
     [HttpPost("cars/{carId:long}/claims")]
-    public async Task<ActionResult<InsuranceClaimResponse>> RegisterClaim(long carId, [FromBody] CreateInsuranceClaimRequest request)
+    public async Task<ActionResult<InsuranceClaimResponse>> RegisterClaim(
+        long carId,
+        [FromBody] CreateInsuranceClaimRequest request
+    )
     {
-        try
+        var result = await _service.CreateInsuranceClaim(carId, request);
+
+        if (!result.IsSuccess)
         {
-            var claim = await _service.CreateInsuranceClaim(carId, request);
-            return StatusCode(StatusCodes.Status201Created, claim);
+            if (result.Error?.Code == "record.not.found")
+                return NotFound(new { message = result.Error.Message });
+            if (result.Error?.Code == "no.valid.policy")
+                return BadRequest(new { message = result.Error.Message });
+            if (result.Error?.Code == "invalid.date.format")
+                return BadRequest(new { message = result.Error.Message });
+            return BadRequest(new { message = result.Error?.Message ?? "An unknown error occurred." });
         }
-        catch (KeyNotFoundException ex)
-        {
-            return NotFound(new { message = ex.Message });
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(new { message = ex.Message });
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { message = ex.Message });
-        }
+
+        return Created();
     }
 
-    [HttpPost("/api/cars/{carId:long}/history")]
-    public async Task<ActionResult<CarHistoryResponse>> GetCarHistory(long carId)
+    [HttpGet("/api/cars/{carId:long}/history")]
+    public async Task<IActionResult> GetCarHistory(long carId)
     {
-        try
+        var result = await _service.GetCarHistoryAsync(carId);
+
+        if (!result.IsSuccess)
         {
-            var carHistory = await _service.GetCarHistoryAsync(carId);
-            return Ok(carHistory);
+            if (result.Error?.Code == "record.not.found")
+                return NotFound(new { message = result.Error.Message });
+
+            return BadRequest(new { message = result.Error?.Message ?? "An unknown error occurred." });
         }
-        catch (KeyNotFoundException ex)
-        {
-            return NotFound(new { message = ex.Message });
-        }
+
+        return Ok(result.Value);
     }
 }

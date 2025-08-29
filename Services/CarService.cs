@@ -1,6 +1,7 @@
 using CarInsurance.Api.Data;
 using CarInsurance.Api.Dtos;
 using CarInsurance.Api.Models;
+using CarInsurance.Api.Utils;
 using Microsoft.EntityFrameworkCore;
 
 namespace CarInsurance.Api.Services;
@@ -9,40 +10,68 @@ public class CarService(AppDbContext db)
 {
     private readonly AppDbContext _db = db;
 
-    public async Task<List<CarDto>> ListCarsAsync()
+    public async Task<Result<List<CarDto>>> ListCarsAsync()
     {
-        return await _db.Cars.Include(c => c.Owner)
+        var cars = await _db.Cars.Include(c => c.Owner)
             .Select(c => new CarDto(c.Id, c.Vin, c.Make, c.Model, c.YearOfManufacture,
                                     c.OwnerId, c.Owner.Name, c.Owner.Email))
             .ToListAsync();
+
+        return cars;
     }
 
-    public async Task<bool> IsInsuranceValidAsync(long carId, DateOnly date)
+    public async Task<Result<InsuranceValidityResponse>> IsInsuranceValidAsync(long carId, string dateString)
     {
-        var carExists = await _db.Cars.AnyAsync(c => c.Id == carId);
-        if (!carExists) throw new KeyNotFoundException($"Car {carId} not found");
+        if (!DateOnly.TryParse(dateString, out var date))
+            return Errors.General.InvalidDateFormat();
 
-        return await _db.Policies.AnyAsync(p =>
+        var carExists = await _db.Cars.AnyAsync(c => c.Id == carId);
+        if (!carExists)
+            return Errors.General.NotFound(nameof(Car), carId);
+
+        var isValid = await _db.Policies.AnyAsync(p =>
             p.CarId == carId &&
             p.StartDate <= date &&
             p.EndDate >= date
         );
+
+        return new InsuranceValidityResponse(
+            carId,
+            date.ToString("yyyy-MM-dd"),
+            isValid
+        );
     }
 
-    public async Task<InsuranceClaimResponse> CreateInsuranceClaim(long carId, CreateInsuranceClaimRequest request)
+    public async Task<Result<InsuranceClaimResponse>> CreateInsuranceClaim(
+        long carId,
+        CreateInsuranceClaimRequest request
+    )
     {
-        var insuranceValid = await IsInsuranceValidAsync(carId, DateOnly.FromDateTime(request.ClaimDate));
+        if (!DateTime.TryParse(request.ClaimDate, out var claimDate))
+            return Errors.General.InvalidDateFormat();
 
-        if (!insuranceValid)
-            throw new InvalidOperationException($"No valid insurance for car {carId} on {request.ClaimDate:yyyy-MM-dd}");
+        var carExists = await _db.Cars.AnyAsync(c => c.Id == carId);
+        if (!carExists)
+            return Errors.General.NotFound(nameof(Car), carId);
 
-        if (request.Amount <= 0) throw new ArgumentException("Amount must be greater than zero");
-        if (string.IsNullOrWhiteSpace(request.Description)) throw new ArgumentException("Description is required");
+        var isValid = await _db.Policies.AnyAsync(p =>
+            p.CarId == carId &&
+            p.StartDate <= DateOnly.FromDateTime(claimDate) &&
+            p.EndDate >= DateOnly.FromDateTime(claimDate)
+        );
+
+        if (!isValid)
+            return Errors.InsuranceClaim.NoActivePolicy(carId, DateOnly.FromDateTime(claimDate));
+
+        var validation = ValidateClaimRequest(DateOnly.FromDateTime(claimDate), request.Amount, request.Description);
+
+        if (validation != null)
+            return validation;
 
         var claim = new InsuranceClaim
         {
             CarId = carId,
-            ClaimDate = DateOnly.FromDateTime(request.ClaimDate),
+            ClaimDate = DateOnly.FromDateTime(claimDate),
             Description = request.Description,
             Amount = request.Amount,
             Status = ClaimStatusEnumType.Pending
@@ -61,14 +90,29 @@ public class CarService(AppDbContext db)
         );
     }
 
-    public async Task<CarHistoryResponse> GetCarHistoryAsync(long cardId)
+    private static Error? ValidateClaimRequest(DateOnly claimDate, decimal amount, string description)
+    {
+        if (claimDate > DateOnly.FromDateTime(DateTime.UtcNow))
+            return Errors.InsuranceClaim.InvalidClaimDate();
+
+        if (amount <= 0)
+            return Errors.InsuranceClaim.InvalidAmount();
+
+        if (string.IsNullOrWhiteSpace(description))
+            return Errors.InsuranceClaim.RequiredDescription();
+
+        return null;
+    }
+
+    public async Task<Result<CarHistoryResponse>> GetCarHistoryAsync(long carId)
     {
         var car = await _db.Cars
             .Include(c => c.Policies)
             .Include(c => c.Claims)
-            .FirstOrDefaultAsync(c => c.Id == cardId);
+            .FirstOrDefaultAsync(c => c.Id == carId);
 
-        if (car == null) throw new KeyNotFoundException($"Car {cardId} not found");
+        if (car == null)
+            return Errors.General.NotFound(nameof(Car), carId);
 
         var policies = car.Policies
             .OrderBy(p => p.StartDate)
