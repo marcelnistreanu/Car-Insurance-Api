@@ -30,4 +30,26 @@ public class CarsController(CarService service) : ControllerBase
             return NotFound();
         }
     }
+
+    [HttpPost("cars/{carId:long}/claims")]
+    public async Task<ActionResult<InsuranceClaimResponse>> RegisterClaim(long carId, [FromBody] CreateInsuranceClaimRequest request)
+    {
+        try
+        {
+            var claim = await _service.CreateInsuranceClaim(carId, request);
+            return StatusCode(StatusCodes.Status201Created, claim);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
 }
